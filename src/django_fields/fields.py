@@ -15,6 +15,7 @@ if USE_CPICKLE:
 else:
     import pickle
 
+
 class BaseEncryptedField(models.Field):
     '''This code is based on the djangosnippet #1095
        You can find the original at http://www.djangosnippets.org/snippets/1095/'''
@@ -65,6 +66,7 @@ class BaseEncryptedField(models.Field):
             value = self.prefix + binascii.b2a_hex(self.cipher.encrypt(value))
         return value
 
+
 class EncryptedTextField(BaseEncryptedField):
     __metaclass__ = models.SubfieldBase
 
@@ -108,3 +110,20 @@ class PickleField(models.TextField):
         # string saved to PickleField.
         except ValueError:
             return value
+
+
+try:
+    from south.modelsinspector import add_introspection_rules
+    add_introspection_rules([
+        (
+            [BaseEncryptedField], # Class(es) these apply to
+            [],         # Positional arguments (not used)
+            {           # Keyword argument
+                #"cipher": ["cipher", {"default": "AES"}],
+            },
+        ),
+    ], ["^django_fields\.fields\.BaseEncryptedField",
+        "^django_fields\.fields\.EncryptedTextField",
+        "^django_fields\.fields\.EncryptedCharField"])
+except ImportError:
+    pass # must not be using South version >= 0.7
