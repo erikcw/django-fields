@@ -1,6 +1,8 @@
 import binascii
+import datetime
 import random
 import string
+import sys
 
 from django import forms
 from django.db import models
@@ -30,6 +32,10 @@ class BaseEncryptedField(models.Field):
         self.prefix = '$%s$' % cipher
 
         max_length = kwargs.get('max_length', 40)
+        self.unencrypted_length = max_length
+        # always add at least 2 to the max_length:
+        #     one for the null byte, one for padding
+        max_length += 2
         mod = max_length % self.cipher.block_size
         if mod > 0:
             max_length += self.cipher.block_size - mod
@@ -41,10 +47,10 @@ class BaseEncryptedField(models.Field):
         return isinstance(value, basestring) and value.startswith(self.prefix)
 
     def _get_padding(self, value):
-        mod = len(value) % self.cipher.block_size
-        if mod > 0:
-            return self.cipher.block_size - mod
-        return 0
+        # We always want at least 2 chars of padding (including zero byte),
+        # so we could have up to block_size + 1 chars.
+        mod = (len(value) + 2) % self.cipher.block_size
+        return self.cipher.block_size - mod + 2
 
 
     def to_python(self, value):
@@ -62,7 +68,8 @@ class BaseEncryptedField(models.Field):
         if value is not None and not self._is_encrypted(value):
             padding  = self._get_padding(value)
             if padding > 0:
-                value += "\0" + ''.join([random.choice(string.printable) for index in range(padding-1)])
+                value += "\0" + ''.join([random.choice(string.printable)
+                    for index in range(padding-1)])
             value = self.prefix + binascii.b2a_hex(self.cipher.encrypt(value))
         return value
 
@@ -78,6 +85,7 @@ class EncryptedTextField(BaseEncryptedField):
         defaults.update(kwargs)
         return super(EncryptedTextField, self).formfield(**defaults)
 
+
 class EncryptedCharField(BaseEncryptedField):
     __metaclass__ = models.SubfieldBase
 
@@ -88,6 +96,117 @@ class EncryptedCharField(BaseEncryptedField):
         defaults = {'max_length': self.max_length}
         defaults.update(kwargs)
         return super(EncryptedCharField, self).formfield(**defaults)
+
+    def get_db_prep_value(self, value):
+        if value is not None and not self._is_encrypted(value):
+            if len(value) > self.unencrypted_length:
+                raise ValueError("Field value longer than max allowed: " +
+                    str(len(value)) + " > " + str(self.unencrypted_length))
+        return super(EncryptedCharField, self).get_db_prep_value(value)
+
+
+class BaseEncryptedDateField(BaseEncryptedField):
+    # Do NOT define a __metaclass__ for this - it's an abstract parent
+    # for EncryptedDateField and EncryptedDateTimeField.
+    # If you try to inherit from a class with a __metaclass__, you'll
+    # get a very opaque infinite recursion in contribute_to_class.
+
+    def __init__(self, *args, **kwargs):
+        kwargs['max_length'] = self.max_raw_length
+        super(BaseEncryptedDateField, self).__init__(*args, **kwargs)
+
+    def get_internal_type(self):
+        return 'CharField'
+
+    def formfield(self, **kwargs):
+        defaults = {'widget': self.form_widget}
+        defaults.update(kwargs)
+        return super(BaseEncryptedDateField, self).formfield(**defaults)
+
+    def to_python(self, value):
+        # value is either a date or a string in the format "YYYY:MM:DD"
+        if isinstance(value, self.date_class):
+            date_value = value
+        else:
+            date_text = super(BaseEncryptedDateField, self).to_python(value)
+            date_value = self.date_class(*map(int, date_text.split(':')))
+        return date_value
+
+    # def get_prep_value(self, value):
+    def get_db_prep_value(self, value):
+        # value is a date_class.
+        # We need to convert it to a string in the format "YYYY:MM:DD"
+        date_text = value.strftime(self.save_format)
+        return super(BaseEncryptedDateField, self).get_db_prep_value(date_text)
+
+
+class EncryptedDateField(BaseEncryptedDateField):
+    __metaclass__ = models.SubfieldBase
+    form_widget = forms.DateInput
+    save_format = "%Y:%m:%d"
+    date_class = datetime.date
+    max_raw_length = 10  # YYYY:MM:DD
+
+
+class EncryptedDateTimeField(BaseEncryptedDateField):
+    # FIXME:  This doesn't handle time zones, but Python doesn't really either.
+    __metaclass__ = models.SubfieldBase
+    form_widget = forms.DateTimeInput
+    save_format = "%Y:%m:%d:%H:%M:%S:%f"
+    date_class = datetime.datetime
+    max_raw_length = 26  # YYYY:MM:DD:hh:mm:ss:micros
+
+
+class BaseEncryptedNumberField(BaseEncryptedField):
+    # Do NOT define a __metaclass__ for this - it's abstract.
+    # See BaseEncryptedDateField for full explanation.
+    def __init__(self, *args, **kwargs):
+        if self.max_raw_length:
+            kwargs['max_length'] = self.max_raw_length
+        super(BaseEncryptedNumberField, self).__init__(*args, **kwargs)
+
+    def get_internal_type(self):
+        return 'CharField'
+
+    def to_python(self, value):
+        # value is either an int or a string of an integer
+        if isinstance(value, self.number_type):
+            number = value
+        else:
+            number_text = super(BaseEncryptedNumberField, self).to_python(value)
+            number = self.number_type(number_text)
+        return number
+
+    # def get_prep_value(self, value):
+    def get_db_prep_value(self, value):
+        number_text = self.format_string % value
+        return super(BaseEncryptedNumberField, self).get_db_prep_value(number_text)
+
+
+class EncryptedIntField(BaseEncryptedNumberField):
+    __metaclass__ = models.SubfieldBase
+    max_raw_length = len(str(-sys.maxint - 1))
+    number_type = int
+    format_string = "%d"
+
+
+class EncryptedLongField(BaseEncryptedNumberField):
+    __metaclass__ = models.SubfieldBase
+    max_raw_length = None  # no limit
+    number_type = long
+    format_string = "%d"
+
+    def get_internal_type(self):
+        return 'TextField'
+
+
+class EncryptedFloatField(BaseEncryptedNumberField):
+    __metaclass__ = models.SubfieldBase
+    max_raw_length = 150  # arbitrary, but should be sufficient
+    number_type = float
+    # If this format is too long for some architectures, change it.
+    format_string = "%0.66f"
+
 
 class PickleField(models.TextField):
     __metaclass__ = models.SubfieldBase
