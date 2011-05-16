@@ -62,7 +62,7 @@ class BaseEncryptedField(models.Field):
             )
         return value
 
-    def get_db_prep_value(self, value):
+    def get_db_prep_value(self, value, connection=None, prepared=False):
         value = smart_str(value)
 
         if value is not None and not self._is_encrypted(value):
@@ -97,12 +97,16 @@ class EncryptedCharField(BaseEncryptedField):
         defaults.update(kwargs)
         return super(EncryptedCharField, self).formfield(**defaults)
 
-    def get_db_prep_value(self, value):
+    def get_db_prep_value(self, value, connection=None, prepared=False):
         if value is not None and not self._is_encrypted(value):
             if len(value) > self.unencrypted_length:
                 raise ValueError("Field value longer than max allowed: " +
                     str(len(value)) + " > " + str(self.unencrypted_length))
-        return super(EncryptedCharField, self).get_db_prep_value(value)
+        return super(EncryptedCharField, self).get_db_prep_value(
+            value,
+            connection=connection,
+            prepared=prepared,
+        )
 
 
 class BaseEncryptedDateField(BaseEncryptedField):
@@ -133,11 +137,15 @@ class BaseEncryptedDateField(BaseEncryptedField):
         return date_value
 
     # def get_prep_value(self, value):
-    def get_db_prep_value(self, value):
+    def get_db_prep_value(self, value, connection=None, prepared=False):
         # value is a date_class.
         # We need to convert it to a string in the format "YYYY:MM:DD"
         date_text = value.strftime(self.save_format)
-        return super(BaseEncryptedDateField, self).get_db_prep_value(date_text)
+        return super(BaseEncryptedDateField, self).get_db_prep_value(
+            date_text,
+            connection=connection,
+            prepared=prepared,
+        )
 
 
 class EncryptedDateField(BaseEncryptedDateField):
@@ -178,9 +186,13 @@ class BaseEncryptedNumberField(BaseEncryptedField):
         return number
 
     # def get_prep_value(self, value):
-    def get_db_prep_value(self, value):
+    def get_db_prep_value(self, value, connection=None, prepared=False):
         number_text = self.format_string % value
-        return super(BaseEncryptedNumberField, self).get_db_prep_value(number_text)
+        return super(BaseEncryptedNumberField, self).get_db_prep_value(
+            number_text,
+            connection=connection,
+            prepared=prepared,
+        )
 
 
 class EncryptedIntField(BaseEncryptedNumberField):
@@ -214,7 +226,7 @@ class PickleField(models.TextField):
     editable = False
     serialize = False
 
-    def get_db_prep_value(self, value):
+    def get_db_prep_value(self, value, connection=None, prepared=False):
         return pickle.dumps(value)
 
     def to_python(self, value):
